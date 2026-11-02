@@ -1,7 +1,8 @@
 -- ESP STUDIO / Kinetic edition
 -- ESP Studio movement backend: fps-v3
+-- ESP Studio settings storage: auto-v1
 -- Standalone LocalScript: StarterPlayer > StarterPlayerScripts.
--- RightShift or the floating launcher opens the console. Settings are session-only.
+-- RightShift opens the console. Settings auto-save when runtime file storage is available.
 
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
@@ -31,7 +32,129 @@ local defaults = {
 	EnemyColor = Color3.fromRGB(255, 109, 139),
 	FriendlyColor = Color3.fromRGB(100, 218, 255),
 }
-local settings = table.clone(defaults)
+local settings: {[string]: any} = table.clone(defaults)
+local persistence: {[string]: any} = {
+	file = "ESPStudio-settings-v1-" .. tostring(localPlayer.UserId) .. ".json",
+	attribute = "ESPStudioSettingsV1", pending = false, closed = false,
+	ownerAttribute = "ESPStudioSettingsOwner",
+	ranges = {
+		MaxDistance = {100, 5000, 50}, MarkerScale = {0.75, 1.4, 0.05},
+		HighlightFillTransparency = {0, 1, 0.05}, HighlightOutlineTransparency = {0, 1, 0.05},
+		TracerWidth = {1, 4, 0.25}, TracerOpacity = {0.1, 1, 0.05}, UIScale = {0.75, 1.15, 0.05},
+		AimRadius = {40, 300, 5}, AimRange = {100, 2000, 50}, AimSmoothTime = {0.05, 0.5, 0.01},
+		MovementWalkSpeed = {0, 160, 0.5}, MovementSprintSpeed = {0, 240, 0.5},
+		MovementJumpHeight = {0, 150, 0.1}, MovementSmoothTime = {0, 1, 0.01},
+	},
+	choices = {
+		Theme = {"Glacier", "Violet", "Mint", "Ember"}, TracerOrigin = {"Bottom", "Center", "Cursor"},
+		AimPart = {"Head", "Body"}, AimKey = {"RMB", "Q"}, MovementSprintMode = {"Hold", "Toggle"},
+		MovementBackend = {"Auto", "Humanoid", "Controller"},
+	},
+}
+function persistence.Status(text)
+	persistence.status = text
+	if persistence.label then persistence.label.Text = text end
+end
+function persistence.Finite(value)
+	return type(value) == "number" and value == value and math.abs(value) < math.huge
+end
+function persistence.Decode(source)
+	if type(source) ~= "string" or #source > 65536 then return nil end
+	local ok, data = pcall(function() return HttpService:JSONDecode(source) end)
+	if not ok or type(data) ~= "table" or data.version ~= 1 or type(data.settings) ~= "table" then return nil end
+	local result = table.clone(defaults)
+	for key, default in defaults do
+		local value = data.settings[key]
+		if key == "EnemyColor" or key == "FriendlyColor" then
+			if type(value) == "table" and persistence.Finite(value[1]) and persistence.Finite(value[2]) and persistence.Finite(value[3])
+				and value[1] >= 0 and value[1] <= 1 and value[2] >= 0 and value[2] <= 1 and value[3] >= 0 and value[3] <= 1 then
+				result[key] = Color3.new(value[1], value[2], value[3])
+			end
+		elseif type(default) == "boolean" and type(value) == "boolean" then result[key] = value
+		elseif type(default) == "number" and persistence.Finite(value) then
+			local range = persistence.ranges[key]
+			if range then result[key] = math.clamp(range[1] + math.floor((value - range[1]) / range[3] + 0.5) * range[3], range[1], range[2]) end
+		elseif persistence.choices[key] and table.find(persistence.choices[key], value) then result[key] = value end
+	end
+	return result
+end
+function persistence.Encode()
+	local values = {}
+	for key in defaults do
+		local value = settings[key]
+		values[key] = (key == "EnemyColor" or key == "FriendlyColor") and {value.R, value.G, value.B} or value
+	end
+	return HttpService:JSONEncode({version = 1, settings = values})
+end
+function persistence.Changed()
+	for key in defaults do if settings[key] ~= persistence.saved[key] then return true end end
+	return false
+end
+function persistence.Flush(force)
+	if persistence.token ~= localPlayer:GetAttribute(persistence.ownerAttribute) then return false end
+	if not force and not persistence.Changed() then return true end
+	local ok, encoded = pcall(persistence.Encode)
+	if not ok then persistence.Status("Could not encode settings; use Save now to retry"); return false end
+	local cached = pcall(function() localPlayer:SetAttribute(persistence.attribute, encoded) end)
+	local written = false
+	if persistence.disk then
+		local okWrite, result = pcall(persistence.writeFile, persistence.file, encoded)
+		written = okWrite and result ~= false
+	end
+	if written then persistence.Status("Saved on this device / auto-save on")
+	elseif cached then persistence.Status(persistence.disk and "Session saved / device save failed; try Save now" or "Session only / device storage unavailable")
+	else persistence.Status("Saving unavailable / use Save now to retry") end
+	if written or cached then persistence.saved = table.clone(settings) end
+	return written or cached
+end
+function persistence.Schedule()
+	if persistence.closed or not persistence.Changed() then return end
+	if persistence.token ~= localPlayer:GetAttribute(persistence.ownerAttribute) then return end
+	-- Keep reruns current even when Destroying is deferred and the disk write is pending.
+	local encoded, source = pcall(persistence.Encode)
+	if encoded then pcall(function() localPlayer:SetAttribute(persistence.attribute, source) end) end
+	if persistence.pending then return end
+	persistence.pending = true
+	persistence.Status("Saving settings...")
+	task.delay(0.4, function()
+		persistence.pending = false
+		if not persistence.closed then persistence.Flush() end
+	end)
+end
+function persistence.Load()
+	local environment = getfenv()
+	persistence.readFile, persistence.writeFile = environment.readfile, environment.writefile
+	persistence.disk = type(persistence.readFile) == "function" and type(persistence.writeFile) == "function"
+	local cached, source = pcall(function() return localPlayer:GetAttribute(persistence.attribute) end)
+	local restored = cached and persistence.Decode(source) or nil
+	local fromSession, invalid = restored ~= nil, false
+	if not restored and persistence.disk then
+		local shouldRead, knownExists = true, false
+		if type(environment.isfile) == "function" then
+			local checked, exists = pcall(environment.isfile, persistence.file)
+			if checked and exists == false then shouldRead = false end
+			knownExists = checked and exists == true
+		end
+		if shouldRead then
+			local read, contents = pcall(persistence.readFile, persistence.file)
+			if read then restored = persistence.Decode(contents); invalid = restored == nil end
+			if not read and knownExists then invalid = true end
+		end
+	end
+	if restored then settings = restored end
+	persistence.token = HttpService:GenerateGUID(false)
+	localPlayer:SetAttribute(persistence.ownerAttribute, persistence.token)
+	persistence.saved = table.clone(settings)
+	if invalid then persistence.Status("Unreadable saved profile / defaults loaded")
+	elseif restored then persistence.Status(fromSession and "Settings restored / current session" or "Settings loaded from this device")
+	else persistence.Status(persistence.disk and "Auto-save ready / this device" or "Session only / device storage unavailable") end
+end
+-- Flush the old copy before reading its profile, including changes still awaiting auto-save.
+do
+	local previous = playerGui:FindFirstChild("DeveloperESPPanel")
+	if previous then previous:Destroy() end
+end
+persistence.Load()
 local palette = {
 	Background = Color3.fromRGB(12, 15, 21), Sidebar = Color3.fromRGB(9, 12, 17),
 	Card = Color3.fromRGB(19, 24, 33), Raised = Color3.fromRGB(26, 33, 45),
@@ -141,9 +264,7 @@ local function button(parent, text, position, size)
 	return object
 end
 
--- A second copy replaces only this overlay and lets its old connections clean up.
-local previous = playerGui:FindFirstChild("DeveloperESPPanel")
-if previous then previous:Destroy() end
+-- The previous overlay has already flushed settings and disconnected its events.
 local screen = make("ScreenGui", {
 	Name = "DeveloperESPPanel", ResetOnSpawn = false, IgnoreGuiInset = true,
 	DisplayOrder = 50, ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
@@ -724,7 +845,15 @@ addSwatches(colorRight, "Friendly players", "FriendlyColor")
 local motion = section(pages.Appearance, "Workspace feel", "Scale the console and control animation intensity.", 218)
 addToggle(motion, "Reduced motion", "Instant UI transitions and static endpoints", "ReducedMotion", 65)
 addSlider(motion, "Interface scale", "UIScale", 0.75, 1.15, 0.05, percent, 136)
-local resetCard = section(pages.Appearance, "Fresh start", "Restore all session settings to their defaults.", 118)
+local savedCard = section(pages.Appearance, "Saved settings", "Your choices reload automatically the next time you run.", 155)
+persistence.label = label(savedCard, persistence.status, UDim2.fromOffset(16, 65), UDim2.new(1, -32, 0, 32), 11, palette.Muted, Enum.Font.Code)
+persistence.label.Name = "SettingsSaveStatus"
+persistence.label.TextWrapped = true
+local saveNow = button(savedCard, "Save now", UDim2.fromOffset(16, 109), UDim2.new(1, -32, 0, 31))
+saveNow.Activated:Connect(function()
+	if persistence.Flush(true) then notify(persistence.status) else notify("Settings could not be saved; see save status") end
+end)
+local resetCard = section(pages.Appearance, "Fresh start", "Restore defaults and save them for next time.", 118)
 local reset = button(resetCard, "Reset settings", UDim2.fromOffset(16, 70), UDim2.new(1, -32, 0, 32))
 reset.Activated:Connect(function()
 	settings = table.clone(defaults)
@@ -734,6 +863,7 @@ reset.Activated:Connect(function()
 	movement.Update(0)
 	refreshAll()
 	updateLayout()
+	persistence.Flush(true)
 	notify("Default settings restored")
 end)
 
@@ -796,6 +926,7 @@ refreshAll = function()
 	for _, refresh in controls do refresh() end
 	refreshNavigation()
 	updatePreview()
+	persistence.Schedule()
 end
 search:GetPropertyChangedSignal("Text"):Connect(function()
 	local query = string.lower(search.Text)
@@ -1795,6 +1926,8 @@ end)
 -- Explicit teardown also handles replacing/rerunning this LocalScript.
 local function cleanup()
 	if not alive then return end
+	persistence.Flush()
+	persistence.closed = true
 	alive = false
 	activePointer = nil
 	releaseAim()
@@ -1822,6 +1955,7 @@ end
 refreshAll()
 selectPage("Overview")
 watchCamera()
+movement.Update(0)
 window.Position = UDim2.fromOffset(0, 12)
 setOpen(true)
 RunService:BindToRenderStep(aimRenderName, Enum.RenderPriority.Camera.Value + 1, updateAim)
