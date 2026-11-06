@@ -23,6 +23,7 @@ local defaults = {
 	UIScale = 1, Theme = "Glacier",
 	AimEnabled = false, AimTeamCheck = true, AimVisibilityCheck = true, AimShowRadius = true,
 	AimRadius = 140, AimRange = 800, AimSmoothTime = 0.12, AimPart = "Head", AimKey = "RMB",
+	AimRadiusFullScreen = false,
 	MovementEnabled = false, MovementSpeed = true, MovementJump = true, MovementSprint = true,
 	MovementWalkSpeed = 16, MovementSprintSpeed = 28, MovementJumpHeight = 7.2,
 	MovementSmoothTime = 0.18, MovementSprintMode = "Hold", MovementKeepOnRespawn = true,
@@ -41,7 +42,7 @@ local persistence: {[string]: any} = {
 		MaxDistance = {100, 5000, 50}, MarkerScale = {0.75, 1.4, 0.05},
 		HighlightFillTransparency = {0, 1, 0.05}, HighlightOutlineTransparency = {0, 1, 0.05},
 		TracerWidth = {1, 4, 0.25}, TracerOpacity = {0.1, 1, 0.05}, UIScale = {0.75, 1.15, 0.05},
-		AimRadius = {40, 300, 5}, AimRange = {100, 2000, 50}, AimSmoothTime = {0.05, 0.5, 0.01},
+		AimRadius = {40, math.huge, 5}, AimRange = {100, 2000, 50}, AimSmoothTime = {0, 0.5, 0.01},
 		MovementWalkSpeed = {0, 160, 0.5}, MovementSprintSpeed = {0, 240, 0.5},
 		MovementJumpHeight = {0, 150, 0.1}, MovementSmoothTime = {0, 1, 0.01},
 	},
@@ -472,12 +473,19 @@ local function twoColumns(parent, leftHeight, rightHeight)
 	table.insert(columns, {container = container, left = left, right = right, leftHeight = leftHeight, rightHeight = rightHeight})
 	return left, right
 end
+local function aimRadiusCap()
+	local camera = workspace.CurrentCamera
+	if not camera then return 300 end
+	-- Round the center-to-corner distance up to a slider step.
+	return math.max(45, math.ceil(camera.ViewportSize.Magnitude / 10) * 5)
+end
 local function setSetting(key, value)
 	local limit = movement.limits[key]
 	if limit then
 		if type(value) ~= "number" or value ~= value or math.abs(value) == math.huge then return end
 		value = math.clamp(limit[1] + math.floor((value - limit[1]) / limit[3] + 0.5) * limit[3], limit[1], limit[2])
 	end
+	if key == "AimRadius" then settings.AimRadiusFullScreen = value >= aimRadiusCap() end
 	settings[key] = value
 	if key == "AimEnabled" or key == "AimKey" then releaseAim(true) end
 	if string.sub(key, 1, 8) == "Movement" and movement.MarkDirty then
@@ -510,6 +518,10 @@ end
 
 local activePointer
 local function addSlider(parent, title, key, minimum, maximum, step, formatter, y, editable)
+	local function maximumValue()
+		if type(maximum) == "function" then return maximum() end
+		return maximum
+	end
 	label(parent, title, UDim2.fromOffset(16, y), UDim2.new(1, -120, 0, 24), 12)
 	local valueLabel = make(editable and "TextBox" or "TextLabel", {
 		Name = key .. "Value", Text = "", Position = UDim2.new(1, -112, 0, y), Size = UDim2.fromOffset(96, 24),
@@ -526,10 +538,11 @@ local function addSlider(parent, title, key, minimum, maximum, step, formatter, 
 		end)
 		valueLabel.FocusLost:Connect(function()
 			local value = tonumber(valueLabel.Text)
+			local limit = maximumValue()
 			if value and value == value and math.abs(value) < math.huge then
-				setSetting(key, math.clamp(minimum + math.floor((value - minimum) / step + 0.5) * step, minimum, maximum))
+				setSetting(key, math.clamp(minimum + math.floor((value - minimum) / step + 0.5) * step, minimum, limit))
 			else notify("Enter a finite number, without units.") end
-			valueLabel.Text = formatter(settings[key])
+			valueLabel.Text = formatter(settings[key], limit)
 			tween(valueLabel, {BackgroundColor3 = palette.Raised}, 0.18)
 		end)
 	end
@@ -547,8 +560,9 @@ local function addSlider(parent, title, key, minimum, maximum, step, formatter, 
 	hitbox.MouseLeave:Connect(function() tween(knob, {Size = UDim2.fromOffset(13, 13)}, 0.18) end)
 	local function move(x, left, width)
 		local ratio = math.clamp((x - left) / math.max(1, width), 0, 1)
-		local value = minimum + math.floor((ratio * (maximum - minimum)) / step + 0.5) * step
-		setSetting(key, math.clamp(value, minimum, maximum))
+		local limit = maximumValue()
+		local value = minimum + math.floor((ratio * (limit - minimum)) / step + 0.5) * step
+		setSetting(key, math.clamp(value, minimum, limit))
 	end
 	hitbox.InputBegan:Connect(function(input)
 		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
@@ -559,12 +573,17 @@ local function addSlider(parent, title, key, minimum, maximum, step, formatter, 
 			drag(input.Position.X)
 		end
 	end)
-	table.insert(controls, function()
-		local ratio = (settings[key] - minimum) / (maximum - minimum)
+	local function refresh()
+		local limit = maximumValue()
+		local value = math.clamp(settings[key], minimum, limit)
+		if key == "AimRadius" and settings.AimRadiusFullScreen then value = limit end
+		local ratio = (value - minimum) / (limit - minimum)
 		fill.Size = UDim2.fromScale(ratio, 1)
 		knob.Position = UDim2.new(ratio, 0, 0.5, 0)
-		if not editable or not valueLabel:IsFocused() then valueLabel.Text = formatter(settings[key]) end
-	end)
+		if not editable or not valueLabel:IsFocused() then valueLabel.Text = formatter(value, limit) end
+	end
+	table.insert(controls, refresh)
+	return refresh
 end
 local function addChoices(parent, title, key, options, y)
 	label(parent, title, UDim2.fromOffset(16, y), UDim2.new(1, -32, 0, 22), 12)
@@ -682,13 +701,19 @@ addChoices(aimControls, "Hold control", "AimKey", {"RMB", "Q"}, 300)
 label(aimControls, "Gamepad: hold L2. Touch: hold AIM.", UDim2.fromOffset(16, 378), UDim2.new(1, -32, 0, 18), 10, palette.Dim)
 local aimTuning = section(aimRight, "Targeting", "Choose the closest player to screen center.", 411)
 addChoices(aimTuning, "Aim point", "AimPart", {"Head", "Body"}, 65)
-addSlider(aimTuning, "Smoothing time", "AimSmoothTime", 0.05, 0.5, 0.01,
-	function(value) return string.format("%d ms", math.floor(value * 1000 + 0.5)) end, 149)
-addSlider(aimTuning, "Aim radius", "AimRadius", 40, 300, 5,
-	function(value) return string.format("%d px", value) end, 226)
+addSlider(aimTuning, "Smoothing time", "AimSmoothTime", 0, 0.5, 0.01,
+	function(value)
+		if value == 0 then return "Instant" end
+		return string.format("%d ms", math.floor(value * 1000 + 0.5))
+	end, 149)
+local refreshAimRadius = addSlider(aimTuning, "Aim radius", "AimRadius", 40, aimRadiusCap, 5,
+	function(value, limit)
+		if value >= limit then return "Full screen" end
+		return string.format("%d px", value)
+	end, 226)
 addSlider(aimTuning, "Maximum range", "AimRange", 100, 2000, 50,
 	function(value) return string.format("%d studs", value) end, 303)
-label(aimTuning, "Lower smoothing time follows faster.", UDim2.fromOffset(16, 378), UDim2.new(1, -32, 0, 18), 10, palette.Dim)
+label(aimTuning, "Slide all the way left for Instant.", UDim2.fromOffset(16, 378), UDim2.new(1, -32, 0, 18), 10, palette.Dim)
 local aimDiagnostics = section(pages.Aim, "Last aim status", "The live readout explains why a target is not acquired.", 110)
 aimStateLabel = label(aimDiagnostics, lastAimStatus, UDim2.fromOffset(16, 69), UDim2.new(1, -32, 0, 24), 11, palette.Muted, Enum.Font.Code)
 
@@ -958,6 +983,7 @@ end
 updateLayout = function(recenter)
 	local camera = workspace.CurrentCamera
 	if not camera then return end
+	refreshAimRadius()
 	local viewport = camera.ViewportSize
 	local topLeft, bottomRight = GuiService:GetGuiInset()
 	safeMin = topLeft + Vector2.new(12, 12)
@@ -1179,7 +1205,8 @@ aimRaycastParams.FilterType = Enum.RaycastFilterType.Exclude
 aimRaycastParams.IgnoreWater = true
 local function chooseAimTarget(camera, localCharacter, localRoot)
 	local center = camera.ViewportSize / 2
-	local bestPart, bestScore, bestUserId = nil, settings.AimRadius ^ 2, math.huge
+	local radiusSquared = settings.AimRadiusFullScreen and math.huge or settings.AimRadius ^ 2
+	local bestPart, bestScore, bestUserId = nil, radiusSquared, math.huge
 	local bestPlayer
 	local counts = {players = 0, living = 0, teams = 0, range = 0, view = 0, radius = 0}
 	aimRaycastParams.FilterDescendantsInstances = {localCharacter, camera}
@@ -1203,7 +1230,7 @@ local function chooseAimTarget(camera, localCharacter, localRoot)
 		counts.view += 1
 		local offset = Vector2.new(projected.X, projected.Y) - center
 		local score = offset.X ^ 2 + offset.Y ^ 2
-		if score > settings.AimRadius ^ 2 then continue end
+		if score > radiusSquared then continue end
 		counts.radius += 1
 		if score > bestScore or (score == bestScore and player.UserId >= bestUserId) then continue end
 		local direction = part.Position - camera.CFrame.Position
@@ -1240,7 +1267,9 @@ local function updateAim(dt)
 		return
 	end
 	aimCircle.Position = UDim2.fromOffset(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
-	aimCircle.Size = UDim2.fromOffset(settings.AimRadius * 2, settings.AimRadius * 2)
+	local cap = aimRadiusCap()
+	local radius = settings.AimRadiusFullScreen and cap or math.min(settings.AimRadius, cap)
+	aimCircle.Size = UDim2.fromOffset(radius * 2, radius * 2)
 	if not aimWindowFocused then releaseAim(true); showAimStatus("Click the game window to aim"); return end
 	if GuiService.MenuIsOpen then releaseAim(true); showAimStatus("Close the Roblox menu to aim"); return end
 	if UserInputService:GetFocusedTextBox() then releaseAim(true); showAimStatus("Finish typing before aiming"); return end
@@ -1278,8 +1307,13 @@ local function updateAim(dt)
 	local part, player, reason = chooseAimTarget(camera, character, localRoot)
 	if not part then showAimStatus(reason); return end
 	local goal = CFrame.lookAt(camera.CFrame.Position, part.Position)
-	local alpha = 1 - math.exp(-math.max(0, dt) / math.max(0.01, settings.AimSmoothTime))
-	camera.CFrame = camera.CFrame:Lerp(goal, alpha)
+	local smoothTime = settings.AimSmoothTime
+	if smoothTime == 0 then
+		camera.CFrame = goal
+	else
+		local alpha = 1 - math.exp(-math.max(0, dt) / math.max(0.01, smoothTime))
+		camera.CFrame = camera.CFrame:Lerp(goal, alpha)
+	end
 	local point = camera:WorldToViewportPoint(part.Position)
 	aimDot.Position = UDim2.fromOffset(point.X, point.Y)
 	aimDot.Visible = true
