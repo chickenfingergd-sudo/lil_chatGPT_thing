@@ -1,4 +1,4 @@
--- ESP STUDIO / Kinetic edition
+-- ESP STUDIO / Aurora edition
 -- ESP Studio movement backend: fps-v3
 -- ESP Studio settings storage: auto-v1
 -- Standalone LocalScript: StarterPlayer > StarterPlayerScripts.
@@ -20,7 +20,9 @@ local defaults = {
 	MaxDistance = 1000, MarkerScale = 1, HighlightFillTransparency = 0.8,
 	HighlightOutlineTransparency = 0.15, TracerWidth = 1.5, TracerOpacity = 0.7,
 	TracerOrigin = "Bottom", PulseTracers = true, ReducedMotion = false,
-	UIScale = 1, Theme = "Glacier",
+	UIScale = 1, Theme = "Glacier", CustomAccent = Color3.fromRGB(114, 193, 255),
+	PanelStyle = "Midnight", PanelOpacity = 1, UIEffects = true, UIMotionSpeed = 1,
+	NavigationStyle = "Adaptive",
 	AimEnabled = false, AimTeamCheck = true, AimVisibilityCheck = true, AimShowRadius = true,
 	AimRadius = 140, AimRange = 800, AimSmoothTime = 0.12, AimPart = "Head", AimKey = "RMB",
 	AimRadiusFullScreen = false,
@@ -42,12 +44,15 @@ local persistence: {[string]: any} = {
 		MaxDistance = {100, 5000, 50}, MarkerScale = {0.75, 1.4, 0.05},
 		HighlightFillTransparency = {0, 1, 0.05}, HighlightOutlineTransparency = {0, 1, 0.05},
 		TracerWidth = {1, 4, 0.25}, TracerOpacity = {0.1, 1, 0.05}, UIScale = {0.75, 1.15, 0.05},
+		PanelOpacity = {0.55, 1, 0.05}, UIMotionSpeed = {0.5, 2, 0.25},
 		AimRadius = {40, math.huge, 5}, AimRange = {100, 2000, 50}, AimSmoothTime = {0, 0.5, 0.01},
 		MovementWalkSpeed = {0, 160, 0.5}, MovementSprintSpeed = {0, 240, 0.5},
 		MovementJumpHeight = {0, 150, 0.1}, MovementSmoothTime = {0, 1, 0.01},
 	},
 	choices = {
-		Theme = {"Glacier", "Violet", "Mint", "Ember"}, TracerOrigin = {"Bottom", "Center", "Cursor"},
+		Theme = {"Glacier", "Violet", "Mint", "Ember", "Rose", "Gold", "Custom"},
+		PanelStyle = {"Midnight", "Graphite", "Dusk", "Deep Sea"}, NavigationStyle = {"Adaptive", "Tabs only"},
+		TracerOrigin = {"Bottom", "Center", "Cursor"},
 		AimPart = {"Head", "Body"}, AimKey = {"RMB", "Q"}, MovementSprintMode = {"Hold", "Toggle"},
 		MovementBackend = {"Auto", "Humanoid", "Controller"},
 	},
@@ -66,7 +71,7 @@ function persistence.Decode(source)
 	local result = table.clone(defaults)
 	for key, default in defaults do
 		local value = data.settings[key]
-		if key == "EnemyColor" or key == "FriendlyColor" then
+		if key == "EnemyColor" or key == "FriendlyColor" or key == "CustomAccent" then
 			if type(value) == "table" and persistence.Finite(value[1]) and persistence.Finite(value[2]) and persistence.Finite(value[3])
 				and value[1] >= 0 and value[1] <= 1 and value[2] >= 0 and value[2] <= 1 and value[3] >= 0 and value[3] <= 1 then
 				result[key] = Color3.new(value[1], value[2], value[3])
@@ -83,7 +88,7 @@ function persistence.Encode()
 	local values = {}
 	for key in defaults do
 		local value = settings[key]
-		values[key] = (key == "EnemyColor" or key == "FriendlyColor") and {value.R, value.G, value.B} or value
+		values[key] = (key == "EnemyColor" or key == "FriendlyColor" or key == "CustomAccent") and {value.R, value.G, value.B} or value
 	end
 	return HttpService:JSONEncode({version = 1, settings = values})
 end
@@ -160,14 +165,56 @@ local palette = {
 	Background = Color3.fromRGB(12, 15, 21), Sidebar = Color3.fromRGB(9, 12, 17),
 	Card = Color3.fromRGB(19, 24, 33), Raised = Color3.fromRGB(26, 33, 45),
 	Line = Color3.fromRGB(43, 52, 67), Text = Color3.fromRGB(231, 237, 248),
-	Muted = Color3.fromRGB(135, 150, 174), Dim = Color3.fromRGB(85, 101, 126),
+	Muted = Color3.fromRGB(157, 174, 201), Dim = Color3.fromRGB(119, 139, 171),
 	Green = Color3.fromRGB(100, 228, 170),
 }
 local themes = {
 	Glacier = Color3.fromRGB(114, 193, 255), Violet = Color3.fromRGB(177, 150, 255),
 	Mint = Color3.fromRGB(103, 230, 186), Ember = Color3.fromRGB(255, 173, 117),
+	Rose = Color3.fromRGB(255, 133, 189), Gold = Color3.fromRGB(255, 211, 105),
 }
-local accent = themes[settings.Theme]
+local skin = {
+	roles = {"Background", "Sidebar", "Card", "Raised", "Line"},
+	palettes = {
+		Midnight = {"0B1020", "0E1628", "162137", "202E47", "344764"},
+		Graphite = {"101114", "17181D", "202228", "2C2F37", "454954"},
+		Dusk = {"160F23", "1B142D", "261C3B", "35284D", "513C70"},
+		["Deep Sea"] = {"0A1B21", "10262D", "16343C", "20434B", "355E68"},
+	} :: {[string]: {string}},
+	bindings = setmetatable({} :: {[any]: {property: string, role: string}}, {__mode = "k"}),
+	animationTime = 0,
+}
+function skin.ParseHex(text)
+	local hex = string.match(text, "^%s*#?(%x%x%x%x%x%x)%s*$")
+	if not hex then return nil end
+	return Color3.fromRGB(tonumber(hex:sub(1, 2), 16), tonumber(hex:sub(3, 4), 16), tonumber(hex:sub(5, 6), 16))
+end
+function skin.FormatHex(color)
+	return string.format("#%02X%02X%02X", math.floor(color.R * 255 + 0.5), math.floor(color.G * 255 + 0.5), math.floor(color.B * 255 + 0.5))
+end
+function skin.Accent(theme)
+	if theme == "Custom" then return settings.CustomAccent end
+	return themes[theme] or themes.Glacier
+end
+do
+	local appliedPanelStyle: string? = nil
+	function skin.ApplyPalette()
+		local name = settings.PanelStyle
+		if appliedPanelStyle == name then return end
+		appliedPanelStyle = name
+		local colors = skin.palettes[name] or skin.palettes.Midnight
+		for index, role in skin.roles do palette[role] = skin.ParseHex(colors[index]) end
+		for object, binding in pairs(skin.bindings) do
+			if object.Parent then object[binding.property] = palette[binding.role] end
+		end
+	end
+end
+function skin.Duration(seconds)
+	if settings.ReducedMotion then return 0 end
+	return seconds / settings.UIMotionSpeed
+end
+skin.ApplyPalette()
+local accent = skin.Accent(settings.Theme)
 local alive = true
 local connections, controls, accentBindings, columns, navigation = {}, {}, {}, {}, {}
 local activeTweens = setmetatable({}, {__mode = "k"})
@@ -185,7 +232,17 @@ local movement: {[string]: any} = {
 
 local function make(className, properties, parent)
 	local object = Instance.new(className)
-	for property, value in properties do object[property] = value end
+	for property, value in properties do
+		object[property] = value
+		if property == "BackgroundColor3" or (className == "UIStroke" and property == "Color") then
+			for _, role in skin.roles do
+				if value == palette[role] then
+					skin.bindings[object] = {property = property, role = role}
+					break
+				end
+			end
+		end
+	end
 	if parent and object:IsA("GuiObject") and properties.LayoutOrder == nil then
 		layoutOrders[parent] = (layoutOrders[parent] or 0) + 1
 		object.LayoutOrder = layoutOrders[parent]
@@ -225,7 +282,7 @@ end
 local function tween(object, properties, duration, style)
 	if activeTweens[object] then activeTweens[object]:Cancel() end
 	local animation = TweenService:Create(object,
-		TweenInfo.new(settings.ReducedMotion and 0 or (duration or 0.18),
+		TweenInfo.new(skin.Duration(duration or 0.18),
 			style or Enum.EasingStyle.Quint, Enum.EasingDirection.Out), properties)
 	activeTweens[object] = animation
 	animation:Play()
@@ -260,7 +317,7 @@ local function button(parent, text, position, size)
 		make("UICorner", {CornerRadius = UDim.new(1, 0)}, ripple)
 		make("UIAspectRatioConstraint", {AspectRatio = 1}, ripple)
 		tween(ripple, {Size = UDim2.fromScale(2.5, 2.5), BackgroundTransparency = 1}, 0.38)
-		task.delay(0.4, function() ripple:Destroy() end)
+		task.delay(skin.Duration(0.4), function() ripple:Destroy() end)
 	end)
 	return object
 end
@@ -326,18 +383,18 @@ host.ZIndex = 10
 host.Visible = false
 local hostScale = make("UIScale", {Scale = 1}, host)
 local shadow = round(frame(host, "Shadow", UDim2.fromOffset(0, 10), UDim2.fromScale(1, 1), Color3.new()), 14)
-shadow.BackgroundTransparency = 0.45
+shadow.BackgroundTransparency = 0.68
 local window = round(make("CanvasGroup", {
 	Name = "Console", Size = UDim2.fromScale(1, 1), BackgroundColor3 = palette.Background,
 	BorderSizePixel = 0, GroupTransparency = 1,
-}, host), 12)
-stroke(window, palette.Line, 0.05)
+}, host), 14)
+skin.windowBorder = stroke(window, palette.Line, 0.05)
 local accentBar = bindAccent(frame(window, "Accent", UDim2.new(), UDim2.new(1, 0, 0, 2), accent), "BackgroundColor3")
 local accentGradient = make("UIGradient", {
 	Color = ColorSequence.new({
-		ColorSequenceKeypoint.new(0, Color3.fromRGB(85, 108, 155)),
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(115, 115, 115)),
 		ColorSequenceKeypoint.new(0.5, Color3.new(1, 1, 1)),
-		ColorSequenceKeypoint.new(1, Color3.fromRGB(85, 108, 155)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(115, 115, 115)),
 	}),
 }, accentBar)
 
@@ -346,9 +403,21 @@ local dragHandle = make("TextButton", {
 	Name = "DragHandle", Text = "", AutoButtonColor = false, BackgroundTransparency = 1,
 	Size = UDim2.new(1, -132, 1, 0),
 }, titlebar)
-bindAccent(label(dragHandle, "[ / ]", UDim2.fromOffset(18, 0), UDim2.fromOffset(42, 48), 17, accent, Enum.Font.Code), "TextColor3")
-label(dragHandle, "ESP STUDIO", UDim2.fromOffset(67, 0), UDim2.fromOffset(145, 48), 14, nil, Enum.Font.GothamBold)
-local edition = bindAccent(label(dragHandle, "/ KINETIC 3", UDim2.fromOffset(213, 0), UDim2.fromOffset(160, 48), 11, accent, Enum.Font.Code), "TextColor3")
+do
+	local tile = bindAccent(round(frame(dragHandle, "BrandTile", UDim2.fromOffset(14, 8), UDim2.fromOffset(36, 32), accent), 9), "BackgroundColor3")
+	tile.BackgroundTransparency = 0.86
+	bindAccent(stroke(tile, accent, 0.53), "Color")
+	local mark = bindAccent(label(tile, "[ / ]", UDim2.new(), UDim2.fromScale(1, 1), 11, accent, Enum.Font.Code), "TextColor3")
+	mark.TextXAlignment = Enum.TextXAlignment.Center
+end
+label(dragHandle, "ESP STUDIO", UDim2.fromOffset(62, 6), UDim2.fromOffset(125, 21), 15, nil, Enum.Font.GothamBold)
+label(dragHandle, "CONTROL DECK", UDim2.fromOffset(63, 25), UDim2.fromOffset(125, 15), 9, palette.Dim, Enum.Font.Code)
+local edition = bindAccent(round(frame(dragHandle, "EditionBadge", UDim2.fromOffset(191, 13), UDim2.fromOffset(76, 22), accent), 6), "BackgroundColor3")
+edition.BackgroundTransparency = 0.89
+do
+	local name = bindAccent(label(edition, "AURORA", UDim2.new(), UDim2.fromScale(1, 1), 10, accent, Enum.Font.Code), "TextColor3")
+	name.TextXAlignment = Enum.TextXAlignment.Center
+end
 local centerButton = button(titlebar, "+", UDim2.new(1, -88, 0, 10), UDim2.fromOffset(30, 28))
 local minimizeButton = button(titlebar, "-", UDim2.new(1, -48, 0, 10), UDim2.fromOffset(30, 28))
 
@@ -380,6 +449,7 @@ local tabbar = frame(window, "Tabs", UDim2.fromOffset(196, 50), UDim2.new(1, -19
 frame(tabbar, "Divider", UDim2.new(0, 0, 1, -1), UDim2.new(1, 0, 0, 1), palette.Line)
 local body = frame(window, "Workspace", UDim2.fromOffset(196, 93), UDim2.new(1, -196, 1, -121))
 local statusbar = frame(window, "Statusbar", UDim2.new(0, 0, 1, -28), UDim2.new(1, 0, 0, 28), palette.Sidebar)
+skin.chrome = {window, titlebar, sidebar, tabbar, statusbar}
 frame(statusbar, "Divider", UDim2.new(), UDim2.new(1, 0, 0, 1), palette.Line)
 local statusText = label(statusbar, "READY", UDim2.fromOffset(14, 0), UDim2.new(0.65, 0, 1, 0), 10, palette.Muted, Enum.Font.Code)
 local fpsText = label(statusbar, "-- FPS", UDim2.new(1, -140, 0, 0), UDim2.fromOffset(124, 28), 10, palette.Dim, Enum.Font.Code)
@@ -408,7 +478,7 @@ local function notify(message)
 	task.delay(2.2, function()
 		if not alive or revision ~= toastRevision then return end
 		tween(toast, {GroupTransparency = 1, Position = UDim2.new(0.5, 0, 1, -bottom + 10)}, 0.2)
-		task.delay(0.22, function()
+		task.delay(skin.Duration(0.22), function()
 			if alive and revision == toastRevision then toast.Visible = false end
 		end)
 	end)
@@ -421,7 +491,7 @@ local pageDefinitions = {
 	{"Aim", "04", "Camera aim assist", "Hold to follow a target near your crosshair.", "aimbot aiming aim assist target camera smoothing fov"},
 	{"Movement", "05", "Kinetic movement lab", "Dial in your pace. Shape your next jump.", "movement walk speed sprint jump height power acceleration mobility"},
 	{"Filters", "06", "Display filters", "Choose who appears in the overlay.", "range team dead color walls"},
-	{"Appearance", "07", "Make it yours", "Tune the palette, scale, and motion.", "theme colors animations reset settings"},
+	{"Appearance", "07", "Appearance studio", "Mix your own accent and tune how the deck feels.", "theme colors custom hex opacity layout motion animations reset settings"},
 }
 local pages, currentPage = {}, "Overview"
 for index, definition in pageDefinitions do
@@ -462,6 +532,8 @@ end
 local function section(parent, title, subtitle, height)
 	local object = round(frame(parent, title, UDim2.new(), UDim2.new(1, 0, 0, height), palette.Card), 10)
 	stroke(object, palette.Line, 0.3)
+	local mark = bindAccent(round(frame(object, "CardMark", UDim2.fromOffset(7, 16), UDim2.fromOffset(2, 12), accent), 1), "BackgroundColor3")
+	mark.BackgroundTransparency = 0.35
 	label(object, title, UDim2.fromOffset(16, 12), UDim2.new(1, -32, 0, 22), 13, nil, Enum.Font.GothamBold)
 	label(object, subtitle, UDim2.fromOffset(16, 36), UDim2.new(1, -32, 0, 20), 10, palette.Muted)
 	return object
@@ -493,7 +565,7 @@ local function setSetting(key, value)
 		movement.Update(0)
 	end
 	refreshAll()
-	if key == "UIScale" then updateLayout() end
+	if key == "UIScale" or key == "NavigationStyle" then updateLayout() end
 end
 local function addToggle(parent, title, description, key, y)
 	local row = make("TextButton", {
@@ -585,28 +657,66 @@ local function addSlider(parent, title, key, minimum, maximum, step, formatter, 
 	table.insert(controls, refresh)
 	return refresh
 end
-local function addChoices(parent, title, key, options, y)
+local function addChoices(parent, title, key, options, y, perRow)
 	label(parent, title, UDim2.fromOffset(16, y), UDim2.new(1, -32, 0, 22), 12)
+	local count = perRow or #options
 	for index, option in options do
-		local choice = button(parent, option, UDim2.new((index - 1) / #options, 16, 0, y + 30), UDim2.new(1 / #options, -22, 0, 33))
+		local column = (index - 1) % count
+		local row = math.floor((index - 1) / count)
+		local choice = button(parent, option, UDim2.new(column / count, 16, 0, y + 30 + row * 39), UDim2.new(1 / count, -22, 0, 33))
+		local swatch
+		if key == "Theme" then
+			swatch = round(frame(choice, "AccentSwatch", UDim2.new(0, 8, 1, -3), UDim2.new(1, -16, 0, 2), skin.Accent(option)), 1)
+		end
 		choice.Activated:Connect(function() setSetting(key, option) end)
 		table.insert(controls, function()
 			choice.BackgroundColor3 = settings[key] == option and accent:Lerp(palette.Card, 0.8) or palette.Raised
 			choice.TextColor3 = settings[key] == option and accent or palette.Muted
+			if swatch then swatch.BackgroundColor3 = skin.Accent(option) end
 		end)
 	end
 end
 local function percent(value) return string.format("%d%%", math.floor(value * 100 + 0.5)) end
 
 -- Overview: real counters, a clearly labeled preview, and useful presets.
-local hero = section(pages.Overview, "Everything in focus.", "A live workspace for your player overlay.", 102)
-bindAccent(frame(hero, "Edge", UDim2.fromOffset(0, 15), UDim2.fromOffset(3, 72), accent), "BackgroundColor3")
-local heroStatus = label(hero, "OVERLAY ONLINE", UDim2.fromOffset(16, 69), UDim2.new(1, -32, 0, 20), 10, palette.Green, Enum.Font.Code)
-local metrics = frame(pages.Overview, "Metrics", UDim2.new(), UDim2.new(1, 0, 0, 76))
+local hero = round(frame(pages.Overview, "AuroraOverview", UDim2.new(), UDim2.new(1, 0, 0, 145), palette.Card), 13)
+hero.ClipsDescendants = true
+stroke(hero, palette.Line, 0.14)
+do
+	skin.wash = bindAccent(frame(hero, "AuroraWash", UDim2.new(), UDim2.fromScale(1, 1), accent), "BackgroundColor3")
+	make("UIGradient", {
+		Rotation = 12,
+		Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 1), NumberSequenceKeypoint.new(0.52, 0.97), NumberSequenceKeypoint.new(1, 0.76)}),
+	}, skin.wash)
+	skin.radar = frame(hero, "Radar", UDim2.new(1, -104, 0.5, 0), UDim2.fromOffset(160, 160))
+	skin.radar.AnchorPoint = Vector2.new(0.5, 0.5)
+	for _, diameter in {56, 104, 154} do
+		local ring = round(frame(skin.radar, "Ring", UDim2.fromScale(0.5, 0.5), UDim2.fromOffset(diameter, diameter)), diameter / 2)
+		ring.AnchorPoint = Vector2.new(0.5, 0.5)
+		bindAccent(stroke(ring, accent, 0.75), "Color")
+	end
+	local horizontal = bindAccent(frame(skin.radar, "Horizontal", UDim2.new(0, 4, 0.5, 0), UDim2.new(1, -8, 0, 1), accent), "BackgroundColor3")
+	local vertical = bindAccent(frame(skin.radar, "Vertical", UDim2.new(0.5, 0, 0, 4), UDim2.new(0, 1, 1, -8), accent), "BackgroundColor3")
+	horizontal.BackgroundTransparency, vertical.BackgroundTransparency = 0.83, 0.83
+	local center = bindAccent(round(frame(skin.radar, "Center", UDim2.fromScale(0.5, 0.5), UDim2.fromOffset(5, 5), accent), 3), "BackgroundColor3")
+	center.AnchorPoint = Vector2.new(0.5, 0.5)
+	skin.radarDot = bindAccent(round(frame(skin.radar, "Signal", UDim2.new(0.5, 52, 0.5, 0), UDim2.fromOffset(8, 8), accent), 4), "BackgroundColor3")
+	skin.radarDot.AnchorPoint = Vector2.new(0.5, 0.5)
+	bindAccent(stroke(skin.radarDot, accent, 0.64, 3), "Color")
+	bindAccent(label(hero, "AURORA / SESSION", UDim2.fromOffset(19, 13), UDim2.new(1, -190, 0, 18), 10, accent, Enum.Font.Code), "TextColor3")
+	label(hero, "Control deck", UDim2.fromOffset(18, 34), UDim2.new(1, -165, 0, 37), 28, nil, Enum.Font.GothamBold)
+	label(hero, "Visuals, aim, and movement in one workspace.", UDim2.fromOffset(19, 73), UDim2.new(1, -172, 0, 20), 11, palette.Muted)
+end
+skin.heroBadge = round(frame(hero, "OverlayStatus", UDim2.fromOffset(18, 107), UDim2.fromOffset(145, 23), palette.Raised), 6)
+skin.heroDot = round(frame(skin.heroBadge, "Signal", UDim2.fromOffset(9, 9), UDim2.fromOffset(5, 5), palette.Green), 3)
+local heroStatus = label(skin.heroBadge, "OVERLAY ONLINE", UDim2.fromOffset(20, 0), UDim2.new(1, -25, 1, 0), 10, palette.Green, Enum.Font.Code)
+local metrics = frame(pages.Overview, "Metrics", UDim2.new(), UDim2.new(1, 0, 0, 82))
 local metricLabels = {}
 for index, text in {"ON SCREEN", "OTHER PLAYERS", "MAX RANGE"} do
 	local card = round(frame(metrics, text, UDim2.new((index - 1) / 3, 0, 0, 0), UDim2.new(1 / 3, -10, 1, 0), palette.Card), 8)
 	stroke(card, palette.Line, 0.4)
+	local line = bindAccent(round(frame(card, "MetricLine", UDim2.new(0, 12, 1, -10), UDim2.fromOffset(22, 2), accent), 1), "BackgroundColor3")
+	line.BackgroundTransparency = 0.38
 	label(card, text, UDim2.fromOffset(12, 10), UDim2.new(1, -24, 0, 17), 9, palette.Dim, Enum.Font.Code)
 	metricLabels[index] = label(card, "00", UDim2.fromOffset(12, 30), UDim2.new(1, -24, 0, 32), 24, nil, Enum.Font.GothamBold)
 end
@@ -845,8 +955,50 @@ addToggle(filterCard, "Use Roblox team colors", "Use each player's team color wh
 local rangeCard = section(pages.Filters, "Render range", "Your character is the origin; the camera is used while respawning.", 150)
 addSlider(rangeCard, "Maximum distance", "MaxDistance", 100, 5000, 50, function(value) return string.format("%d studs", value) end, 74)
 
-local themeCard = section(pages.Appearance, "Accent palette", "One accent, carried through the entire workspace.", 140)
-addChoices(themeCard, "Color theme", "Theme", {"Glacier", "Violet", "Mint", "Ember"}, 65)
+do
+	local themeCard = section(pages.Appearance, "Accent palette", "Choose a preset or mix your own accent.", 245)
+	addChoices(themeCard, "Accent preset", "Theme", persistence.choices.Theme, 60, 4)
+	label(themeCard, "CUSTOM HEX", UDim2.fromOffset(16, 175), UDim2.fromOffset(112, 19), 9, palette.Dim, Enum.Font.Code)
+	local swatch = round(frame(themeCard, "CustomAccentPreview", UDim2.fromOffset(16, 199), UDim2.fromOffset(34, 29), settings.CustomAccent), 6)
+	skin.accentInput = round(make("TextBox", {
+		Name = "CustomAccentHex", Text = skin.FormatHex(settings.CustomAccent), ClearTextOnFocus = false,
+		PlaceholderText = "#72C1FF", Position = UDim2.fromOffset(58, 199), Size = UDim2.fromOffset(112, 29),
+		Font = Enum.Font.Code, TextColor3 = palette.Text, PlaceholderColor3 = palette.Dim, TextSize = 12,
+		BackgroundColor3 = palette.Background, BorderSizePixel = 0,
+	}, themeCard), 6)
+	stroke(skin.accentInput, palette.Line, 0.2)
+	local apply = button(themeCard, "Apply hex", UDim2.fromOffset(178, 199), UDim2.fromOffset(92, 29))
+	local function applyHex()
+		local color = skin.ParseHex(skin.accentInput.Text)
+		if not color then
+			skin.accentInput.Text = skin.FormatHex(settings.CustomAccent)
+			notify("Enter a six-digit hex color, such as #FF85BD")
+			return
+		end
+		settings.CustomAccent = color
+		setSetting("Theme", "Custom")
+	end
+	apply.Activated:Connect(applyHex)
+	skin.accentInput.FocusLost:Connect(function(enterPressed)
+		if enterPressed then applyHex() end
+	end)
+	table.insert(controls, function()
+		swatch.BackgroundColor3 = settings.CustomAccent
+		if not skin.accentInput:IsFocused() then skin.accentInput.Text = skin.FormatHex(settings.CustomAccent) end
+	end)
+end
+do
+	local left, right = twoColumns(pages.Appearance, 326, 326)
+	local shell = section(left, "Window style", "Set the panel tint and make room for content.", 326)
+	addChoices(shell, "Panel tint", "PanelStyle", persistence.choices.PanelStyle, 61, 2)
+	addSlider(shell, "Panel opacity", "PanelOpacity", 0.55, 1, 0.05, percent, 173)
+	addChoices(shell, "Navigation", "NavigationStyle", persistence.choices.NavigationStyle, 244)
+	local motion = section(right, "Motion & scale", "Fine-tune the feel of the workspace.", 326)
+	addToggle(motion, "Ambient effects", "Radar motion and accent glow", "UIEffects", 60)
+	addToggle(motion, "Reduced motion", "Instant UI transitions and static endpoints", "ReducedMotion", 116)
+	addSlider(motion, "Animation speed", "UIMotionSpeed", 0.5, 2, 0.25, function(value) return string.format("%gx", value) end, 179)
+	addSlider(motion, "Interface scale", "UIScale", 0.75, 1.15, 0.05, percent, 252)
+end
 local colorLeft, colorRight = twoColumns(pages.Appearance, 145, 145)
 local swatchColors = {
 	Color3.fromRGB(255, 109, 139), Color3.fromRGB(100, 218, 255), Color3.fromRGB(177, 150, 255),
@@ -867,9 +1019,14 @@ local function addSwatches(parent, title, key)
 end
 addSwatches(colorLeft, "Other players", "EnemyColor")
 addSwatches(colorRight, "Friendly players", "FriendlyColor")
-local motion = section(pages.Appearance, "Workspace feel", "Scale the console and control animation intensity.", 218)
-addToggle(motion, "Reduced motion", "Instant UI transitions and static endpoints", "ReducedMotion", 65)
-addSlider(motion, "Interface scale", "UIScale", 0.75, 1.15, 0.05, percent, 136)
+table.insert(controls, function()
+	for _, surface in skin.chrome do surface.BackgroundTransparency = 1 - settings.PanelOpacity end
+	skin.windowBorder.Color = settings.UIEffects and accent:Lerp(palette.Line, 0.6) or palette.Line
+	skin.windowBorder.Transparency = settings.UIEffects and 0.15 or 0.05
+	accentGradient.Enabled = settings.UIEffects
+	skin.wash.Visible = settings.UIEffects
+	skin.radar.Visible = settings.UIEffects
+end)
 local savedCard = section(pages.Appearance, "Saved settings", "Your choices reload automatically the next time you run.", 155)
 persistence.label = label(savedCard, persistence.status, UDim2.fromOffset(16, 65), UDim2.new(1, -32, 0, 32), 11, palette.Muted, Enum.Font.Code)
 persistence.label.Name = "SettingsSaveStatus"
@@ -941,12 +1098,14 @@ updatePreview = function()
 		part.BackgroundColor3 = settings.ShowHighlights and settings.EnemyColor or palette.Dim
 		part.BackgroundTransparency = settings.ShowHighlights and settings.HighlightFillTransparency or 0.25
 	end
-	heroStatus.Text = enabled and "OVERLAY ONLINE  /  CHANGES APPLY LIVE" or "OVERLAY PAUSED  /  CONTROLS STILL AVAILABLE"
+	heroStatus.Text = enabled and "OVERLAY ONLINE" or "OVERLAY PAUSED"
 	heroStatus.TextColor3 = enabled and palette.Green or palette.Muted
+	skin.heroDot.BackgroundColor3 = enabled and palette.Green or palette.Dim
 	metricLabels[3].Text = string.format("%d", settings.MaxDistance)
 end
 refreshAll = function()
-	accent = themes[settings.Theme] or themes.Glacier
+	skin.ApplyPalette()
+	accent = skin.Accent(settings.Theme)
 	for _, binding in accentBindings do binding[1][binding[2]] = accent end
 	for _, refresh in controls do refresh() end
 	refreshNavigation()
@@ -995,9 +1154,11 @@ updateLayout = function(recenter)
 	layoutHeight = 650
 	host.Size = UDim2.fromOffset(layoutWidth, layoutHeight)
 	hostScale.Scale = layoutScale
-	sidebar.Visible = not compact
+	local showSidebar = not compact and settings.NavigationStyle == "Adaptive"
+	sidebar.Visible = showSidebar
+	if not showSidebar and search:IsFocused() then search:ReleaseFocus() end
 	edition.Visible = not compact
-	local offset = compact and 0 or 196
+	local offset = showSidebar and 196 or 0
 	tabbar.Position = UDim2.fromOffset(offset, 50)
 	tabbar.Size = UDim2.new(1, -offset, 0, 43)
 	body.Position = UDim2.fromOffset(offset, 93)
@@ -1067,12 +1228,13 @@ setOpen = function(value)
 	if value then
 		host.Visible = true
 		tween(window, {GroupTransparency = 0, Position = UDim2.new()}, 0.3)
-		tween(shadow, {BackgroundTransparency = 0.45}, 0.3)
+		tween(shadow, {BackgroundTransparency = 0.68}, 0.3)
 	else
 		tween(window, {GroupTransparency = 1, Position = UDim2.fromOffset(0, 12)}, 0.19)
 		tween(shadow, {BackgroundTransparency = 1}, 0.19)
 		if search:IsFocused() then search:ReleaseFocus() end
-		task.delay(settings.ReducedMotion and 0 or 0.2, function()
+		if skin.accentInput:IsFocused() then skin.accentInput:ReleaseFocus() end
+		task.delay(skin.Duration(0.2), function()
 			if alive and revision == openRevision and not opened then host.Visible = false end
 		end)
 	end
@@ -1948,12 +2110,18 @@ connect(RunService.RenderStepped, function(dt)
 		fpsText.Text = string.format("%d FPS / LOCAL", math.floor(1 / math.max(frameTime, 0.001) + 0.5))
 		statusText.Text = string.format("%s  /  %d ON SCREEN  /  %d PLAYERS", settings.Enabled and "ONLINE" or "PAUSED", onScreenCount, playerCount)
 	end
-	if opened and not settings.ReducedMotion then
-		accentGradient.Offset = Vector2.new(math.sin(clockTime * 0.35) * 0.35, 0)
-		sessionDot.BackgroundTransparency = 0.1 + (math.sin(clockTime * 2) + 1) * 0.15
+	if opened and settings.UIEffects and not settings.ReducedMotion then
+		skin.animationTime += dt * settings.UIMotionSpeed
+		local phase = skin.animationTime
+		accentGradient.Offset = Vector2.new(math.sin(phase * 0.35) * 0.35, 0)
+		sessionDot.BackgroundTransparency = 0.1 + (math.sin(phase * 2) + 1) * 0.15
+		if currentPage == "Overview" then
+			skin.radarDot.Position = UDim2.new(0.5, math.cos(phase * 1.4) * 52, 0.5, math.sin(phase * 1.4) * 52)
+		end
 	else
 		accentGradient.Offset = Vector2.new()
 		sessionDot.BackgroundTransparency = 0
+		skin.radarDot.Position = UDim2.new(0.5, 52, 0.5, 0)
 	end
 end)
 
